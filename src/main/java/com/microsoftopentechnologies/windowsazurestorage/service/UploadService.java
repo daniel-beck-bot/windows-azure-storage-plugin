@@ -17,15 +17,19 @@ package com.microsoftopentechnologies.windowsazurestorage.service;
 
 import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.blob.CloudBlockBlob;
+import com.microsoft.azure.storage.blob.SharedAccessBlobPermissions;
 import com.microsoft.azure.storage.file.CloudFile;
 import com.microsoft.azure.storage.file.FileRequestOptions;
+import com.microsoft.azure.storage.file.SharedAccessFilePermissions;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsConstants;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsUtils;
 import com.microsoftopentechnologies.windowsazurestorage.AzureBlob;
 import com.microsoftopentechnologies.windowsazurestorage.AzureBlobMetadataPair;
 import com.microsoftopentechnologies.windowsazurestorage.AzureStoragePlugin;
 import com.microsoftopentechnologies.windowsazurestorage.Messages;
+import com.microsoftopentechnologies.windowsazurestorage.beans.StorageAccountInfo;
 import com.microsoftopentechnologies.windowsazurestorage.exceptions.WAStorageException;
+import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Constants;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Utils;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadServiceData;
@@ -33,19 +37,26 @@ import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadTyp
 import hudson.EnvVars;
 import hudson.FilePath;
 import hudson.Util;
+import hudson.remoting.VirtualChannel;
+import io.jenkins.plugins.httpclient.RobustHTTPClient;
+import jenkins.MasterToSlaveFileCallable;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang.StringUtils;
 
 import javax.xml.bind.DatatypeConverter;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -62,6 +73,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
     private static final int KEEP_ALIVE_TIME = 1;
     private static final int TIME_OUT = 1;
     private static final TimeUnit TIME_OUT_UNIT = TimeUnit.DAYS;
+    protected static final RobustHTTPClient HTTP_CLIENT = new RobustHTTPClient();
 
     private AtomicInteger filesUploaded = new AtomicInteger(0);
     private ExecutorService executorService = new ThreadPoolExecutor(UPLOAD_THREAD_COUNT, UPLOAD_THREAD_COUNT,
@@ -69,6 +81,58 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
 
     protected UploadService(UploadServiceData serviceData) {
         super(serviceData);
+    }
+
+    final class UploadOnSlave extends MasterToSlaveFileCallable<Void> {
+        private Map<String, String> uploadItemPairs;
+        private List<AzureBlob> azureBlobs;
+
+        UploadOnSlave(Map<String, String> uploadItemPairs, List<AzureBlob> azureBlobs) {
+            this.uploadItemPairs = uploadItemPairs;
+            this.azureBlobs = azureBlobs;
+        }
+
+
+        @Override
+        public Void invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
+            for (Map.Entry<String, String> uploadItemPair : uploadItemPairs.entrySet()) {
+                try {
+                    String filePath = uploadItemPair.getKey();
+                    String url = uploadItemPair.getValue();
+
+                    HTTP_CLIENT.uploadFile(new File(filePath), new URL(url), getServiceData().getTaskListener());
+//                      String uploadedFileHash = uploadBlob(blob, filePath);
+//                AzureBlob azureBlob = new AzureBlob(
+//                        blob.getName(),
+//                        blob.getUri().toString().replace("http://", "https://"),
+//                        uploadedFileHash,
+//                        filePath.length(),
+//                        Constants.BLOB_STORAGE);
+
+                    filesUploaded.addAndGet(1);
+//                    azureBlobs.add(azureBlob);
+                } catch (InterruptedException | IOException e) {
+                    final String message = Messages.AzureStorageBuilder_download_err(
+                            getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
+                    e.printStackTrace(error(message));
+                    println(message);
+                    setRunUnstable();
+                }
+            }
+            return null;
+        }
+    }
+
+    protected String generateWriteSASURL(StorageAccountInfo storageAccountInfo, String fileName,
+                                         String storageType, String name) throws Exception {
+        if (storageType.equalsIgnoreCase(Constants.BLOB_STORAGE)) {
+            return AzureUtils.generateBlobSASURL(storageAccountInfo, name, fileName,
+                    EnumSet.of(SharedAccessBlobPermissions.WRITE));
+        } else if (storageType.equalsIgnoreCase(Constants.FILE_STORAGE)) {
+            return AzureUtils.generateFileSASURL(storageAccountInfo, name, fileName,
+                    EnumSet.of(SharedAccessFilePermissions.WRITE));
+        }
+        throw new Exception("Unknown storage type. Please re-configure your job and build again.");
     }
 
     class UploadThread implements Runnable {

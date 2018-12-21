@@ -24,8 +24,10 @@ import com.microsoft.azure.storage.blob.ListBlobItem;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsConstants;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsUtils;
 import com.microsoftopentechnologies.windowsazurestorage.AzureStoragePlugin;
+import com.microsoftopentechnologies.windowsazurestorage.beans.StorageAccountInfo;
 import com.microsoftopentechnologies.windowsazurestorage.exceptions.WAStorageException;
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
+import com.microsoftopentechnologies.windowsazurestorage.helper.Constants;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Utils;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadServiceData;
 import hudson.EnvVars;
@@ -35,6 +37,8 @@ import org.apache.commons.lang.StringUtils;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
@@ -95,14 +99,26 @@ public class UploadToBlobService extends UploadService {
                 final String blobPath = getItemPath(src, embeddedVP);
                 final CloudBlockBlob blob = container.getBlockBlobReference(blobPath);
                 configureBlobPropertiesAndMetadata(blob, src);
-                getExecutorService().submit(new UploadThread(blob, src, serviceData.getIndividualBlobs()));
+                // filepath url
+                Map<String, String> blobPairs = new HashMap<>();
+
+                StorageAccountInfo accountInfo = serviceData.getStorageAccountInfo();
+                String sas = generateWriteSASURL(accountInfo, blob.getName(),
+                        Constants.BLOB_STORAGE, container.getName());
+                String blobURL = blob.getUri().toString().replace("http://", "https://");
+                String url = blobURL + "?" + sas;
+                blobPairs.put(src.getRemote(), url);
+//                getExecutorService().submit(new UploadThread(blob, src, serviceData.getIndividualBlobs()));
             }
+
         } catch (IOException | InterruptedException | URISyntaxException | StorageException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());
             AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD_FAILED,
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("Fail to upload archive to blob", e);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
