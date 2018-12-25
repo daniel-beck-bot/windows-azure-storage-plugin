@@ -85,7 +85,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         super(serviceData);
     }
 
-    protected class UploadObject {
+    protected static class UploadObject {
         private String name;
         private FilePath src;
         private String url;
@@ -121,7 +121,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         }
     }
 
-    protected class UploadResult {
+    protected static class UploadResult {
         private int statusCode;
         private String fileHash;
         private String name;
@@ -261,7 +261,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         throw new Exception("Unknown storage type. Please re-configure your job and build again.");
     }
 
-    class UploadThread implements Callable<UploadResult> {
+    static class UploadThread implements Callable<UploadResult> {
         private UploadObject uploadObject;
 
         UploadThread(UploadObject uploadObject) {
