@@ -37,8 +37,8 @@ import org.apache.commons.lang.StringUtils;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
@@ -75,9 +75,20 @@ public class UploadToBlobService extends UploadService {
             }
 
             final CloudBlockBlob blob = container.getBlockBlobReference(blobURI);
-            Future<?> archiveUploadFuture = getExecutorService().submit(new UploadThread(blob,
-                    zipPath, serviceData.getArchiveBlobs()));
-            archiveUploadFuture.get();
+
+            StorageAccountInfo accountInfo = serviceData.getStorageAccountInfo();
+            String sas = generateWriteSASURL(accountInfo, blob.getName(),
+                    Constants.BLOB_STORAGE, container.getName());
+            String blobURL = blob.getUri().toString().replace("http://", "https://");
+            List<UploadObject> uploadObjects = new ArrayList<>();
+            UploadObject uploadObject = new UploadObject(blob.getName(), zipPath, blobURL, sas, Constants.BLOB_STORAGE);
+            uploadObjects.add(uploadObject);
+
+            UploadOnSlave uploadOnSlave = new UploadOnSlave(uploadObjects);
+            List<Future<UploadResult>> results = workspacePath.act(uploadOnSlave);
+
+            updateAzureBlobs(results, serviceData.getArchiveBlobs());
+
             tempDir.deleteRecursive();
         } catch (IOException | InterruptedException | URISyntaxException | StorageException | ExecutionException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());
@@ -85,31 +96,37 @@ public class UploadToBlobService extends UploadService {
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("Fail to upload individual files to blob", e);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
     @Override
-    protected void uploadIndividuals(String embeddedVP, FilePath[] paths)
+    protected void uploadIndividuals(String embeddedVP, FilePath[] paths, FilePath workspace)
             throws WAStorageException {
         final UploadServiceData serviceData = getServiceData();
         try {
             final CloudBlobContainer container = getCloudBlobContainer();
 
+            List<UploadObject> uploadObjects = new ArrayList<>();
             for (FilePath src : paths) {
                 final String blobPath = getItemPath(src, embeddedVP);
                 final CloudBlockBlob blob = container.getBlockBlobReference(blobPath);
                 configureBlobPropertiesAndMetadata(blob, src);
                 // filepath url
-                Map<String, String> blobPairs = new HashMap<>();
 
                 StorageAccountInfo accountInfo = serviceData.getStorageAccountInfo();
                 String sas = generateWriteSASURL(accountInfo, blob.getName(),
                         Constants.BLOB_STORAGE, container.getName());
                 String blobURL = blob.getUri().toString().replace("http://", "https://");
-                String url = blobURL + "?" + sas;
-                blobPairs.put(src.getRemote(), url);
-//                getExecutorService().submit(new UploadThread(blob, src, serviceData.getIndividualBlobs()));
+                UploadObject uploadObject = new UploadObject(blob.getName(), src, blobURL, sas, Constants.BLOB_STORAGE);
+                uploadObjects.add(uploadObject);
             }
+
+            UploadOnSlave uploadOnSlave = new UploadOnSlave(uploadObjects);
+            List<Future<UploadResult>> results = workspace.act(uploadOnSlave);
+
+            updateAzureBlobs(results, serviceData.getIndividualBlobs());
 
         } catch (IOException | InterruptedException | URISyntaxException | StorageException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());

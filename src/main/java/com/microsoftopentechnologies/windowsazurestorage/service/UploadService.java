@@ -16,7 +16,6 @@
 package com.microsoftopentechnologies.windowsazurestorage.service;
 
 import com.microsoft.azure.storage.StorageException;
-import com.microsoft.azure.storage.blob.CloudBlockBlob;
 import com.microsoft.azure.storage.blob.SharedAccessBlobPermissions;
 import com.microsoft.azure.storage.file.CloudFile;
 import com.microsoft.azure.storage.file.FileRequestOptions;
@@ -31,6 +30,7 @@ import com.microsoftopentechnologies.windowsazurestorage.beans.StorageAccountInf
 import com.microsoftopentechnologies.windowsazurestorage.exceptions.WAStorageException;
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Constants;
+import com.microsoftopentechnologies.windowsazurestorage.helper.HttpUtils;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Utils;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadServiceData;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadType;
@@ -38,9 +38,11 @@ import hudson.EnvVars;
 import hudson.FilePath;
 import hudson.Util;
 import hudson.remoting.VirtualChannel;
-import io.jenkins.plugins.httpclient.RobustHTTPClient;
 import jenkins.MasterToSlaveFileCallable;
 import org.apache.commons.codec.digest.DigestUtils;
+import org.apache.commons.httpclient.HttpClient;
+import org.apache.commons.httpclient.HttpStatus;
+import org.apache.commons.httpclient.methods.PutMethod;
 import org.apache.commons.lang.StringUtils;
 
 import javax.xml.bind.DatatypeConverter;
@@ -49,16 +51,17 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.URL;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.StringTokenizer;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -73,7 +76,6 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
     private static final int KEEP_ALIVE_TIME = 1;
     private static final int TIME_OUT = 1;
     private static final TimeUnit TIME_OUT_UNIT = TimeUnit.DAYS;
-    protected static final RobustHTTPClient HTTP_CLIENT = new RobustHTTPClient();
 
     private AtomicInteger filesUploaded = new AtomicInteger(0);
     private ExecutorService executorService = new ThreadPoolExecutor(UPLOAD_THREAD_COUNT, UPLOAD_THREAD_COUNT,
@@ -83,43 +85,167 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         super(serviceData);
     }
 
-    final class UploadOnSlave extends MasterToSlaveFileCallable<Void> {
-        private Map<String, String> uploadItemPairs;
-        private List<AzureBlob> azureBlobs;
+    protected class UploadObject {
+        private String name;
+        private FilePath src;
+        private String url;
+        private String sas;
+        private String storageType;
 
-        UploadOnSlave(Map<String, String> uploadItemPairs, List<AzureBlob> azureBlobs) {
-            this.uploadItemPairs = uploadItemPairs;
-            this.azureBlobs = azureBlobs;
+        public UploadObject(String name, FilePath src, String url, String sas, String storageType) {
+            this.name = name;
+            this.src = src;
+            this.url = url;
+            this.sas = sas;
+            this.storageType = storageType;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public String getSas() {
+            return sas;
+        }
+
+        public String getStorageType() {
+            return storageType;
+        }
+
+        public FilePath getSrc() {
+            return src;
+        }
+    }
+
+    protected class UploadResult {
+        private int statusCode;
+        private String fileHash;
+        private String name;
+        private String url;
+        private long byteSize;
+        private String storageType;
+
+        public UploadResult(int statusCode, String fileHash, String name, String url,
+                            long byteSize, String storageType) {
+            this.statusCode = statusCode;
+            this.fileHash = fileHash;
+            this.name = name;
+            this.url = url;
+            this.byteSize = byteSize;
+            this.storageType = storageType;
+        }
+
+        public int getStatusCode() {
+            return statusCode;
+        }
+
+        public String getFileHash() {
+            return fileHash;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public long getByteSize() {
+            return byteSize;
+        }
+
+        public String getStorageType() {
+            return storageType;
+        }
+    }
+
+    final class UploadOnSlave extends MasterToSlaveFileCallable<List<Future<UploadResult>>> {
+        private List<UploadObject> uploadObjects;
+
+        UploadOnSlave(List<UploadObject> uploadObjects) {
+            this.uploadObjects = uploadObjects;
         }
 
 
         @Override
-        public Void invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
-            for (Map.Entry<String, String> uploadItemPair : uploadItemPairs.entrySet()) {
-                try {
-                    String filePath = uploadItemPair.getKey();
-                    String url = uploadItemPair.getValue();
+        public List<Future<UploadResult>> invoke(File f, VirtualChannel channel)
+                throws IOException, InterruptedException {
+            List<Future<UploadResult>> results = new ArrayList<>();
+            for (UploadObject uploadObject : uploadObjects) {
+                Future<UploadResult> result = getExecutorService().submit(new UploadThread(uploadObject));
+                results.add(result);
+            }
+            return results;
 
-                    HTTP_CLIENT.uploadFile(new File(filePath), new URL(url), getServiceData().getTaskListener());
-//                      String uploadedFileHash = uploadBlob(blob, filePath);
-//                AzureBlob azureBlob = new AzureBlob(
-//                        blob.getName(),
-//                        blob.getUri().toString().replace("http://", "https://"),
-//                        uploadedFileHash,
-//                        filePath.length(),
-//                        Constants.BLOB_STORAGE);
+//            for (Future<UploadResult> result : results) {
+//                try {
+//                    UploadResult uploadResult = result.get();
+//                    AzureBlob azureBlob = new AzureBlob(
+//                            uploadResult.getName(),
+//                            uploadResult.getUrl(),
+//                            uploadResult.getFileHash(),
+//                            uploadResult.getByteSize(),
+//                            uploadResult.getStorageType());
+//
+//                    filesUploaded.addAndGet(1);
+//                    azureBlobs.add(azureBlob);
+//                } catch (InterruptedException e) {
+//                    final String message = Messages.AzureStorageBuilder_download_err(
+//                            getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
+//                    e.printStackTrace(error(message));
+//                    println(message);
+//                    setRunUnstable();
+//                } catch (ExecutionException e) {
+//                    e.printStackTrace();
+//                }
+//            }
+//            return null;
+        }
+    }
+
+    protected void updateAzureBlobs(List<Future<UploadResult>> results, List<AzureBlob> azureBlobs) {
+
+        try {
+            for (Future<UploadResult> result : results) {
+                UploadResult uploadResult = result.get();
+                if (uploadResult.getStatusCode() == HttpStatus.SC_OK) {
+                    AzureBlob azureBlob = new AzureBlob(
+                            uploadResult.getName(),
+                            uploadResult.getUrl(),
+                            uploadResult.getFileHash(),
+                            uploadResult.getByteSize(),
+                            uploadResult.getStorageType());
 
                     filesUploaded.addAndGet(1);
-//                    azureBlobs.add(azureBlob);
-                } catch (InterruptedException | IOException e) {
-                    final String message = Messages.AzureStorageBuilder_download_err(
-                            getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
-                    e.printStackTrace(error(message));
-                    println(message);
-                    setRunUnstable();
+                    azureBlobs.add(azureBlob);
                 }
             }
-            return null;
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private String getFileHash(FilePath src) throws WAStorageException {
+
+        try {
+            final MessageDigest md = DigestUtils.getMd5Digest();
+
+            try (InputStream inputStream = src.read();
+                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
+                String s = DigestUtils.md5Hex(inputStream);
+
+            }
+
+            return DatatypeConverter.printHexBinary(md.digest());
+        } catch (IOException | InterruptedException e) {
+            throw new WAStorageException(e.getMessage(), e);
         }
     }
 
@@ -135,53 +261,89 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         throw new Exception("Unknown storage type. Please re-configure your job and build again.");
     }
 
-    class UploadThread implements Runnable {
-        private Object uploadItem;
-        private FilePath filePath;
-        private List<AzureBlob> azureBlobs;
+    class UploadThread implements Callable<UploadResult> {
+        private UploadObject uploadObject;
 
-        UploadThread(Object uploadItem, FilePath filePath, List<AzureBlob> azureBlobs) {
-            this.uploadItem = uploadItem;
-            this.filePath = filePath;
-            this.azureBlobs = azureBlobs;
+        UploadThread(UploadObject uploadObject) {
+            this.uploadObject = uploadObject;
         }
 
+        /**
+         * @return
+         * @throws Exception
+         */
         @Override
-        public void run() {
+        public UploadResult call() throws Exception {
+            HttpClient client = HttpUtils.getClient();
+            String sasUrl = uploadObject.getUrl() + "?" + uploadObject.getSas();
+            FilePath src = uploadObject.getSrc();
+            PutMethod method = HttpUtils.getStoragePutMethod(sasUrl, new File(src.getRemote()));
             try {
-                AzureBlob azureBlob;
-                if (uploadItem instanceof CloudBlockBlob) {
-                    CloudBlockBlob blob = (CloudBlockBlob) uploadItem;
-                    String uploadedFileHash = uploadBlob(blob, filePath);
-                    azureBlob = new AzureBlob(
-                            blob.getName(),
-                            blob.getUri().toString().replace("http://", "https://"),
-                            uploadedFileHash,
-                            filePath.length(),
-                            Constants.BLOB_STORAGE);
-                } else {
-                    CloudFile cloudFile = (CloudFile) uploadItem;
-                    String uploadedFileHash = uploadCloudFile(cloudFile, filePath);
-                    azureBlob = new AzureBlob(
-                            cloudFile.getName(),
-                            cloudFile.getUri().toString().replace("http://", "https://"),
-                            uploadedFileHash,
-                            filePath.length(),
-                            Constants.FILE_STORAGE);
+                int code = client.executeMethod(method);
+                String md;
+                try (InputStream is = src.read()) {
+                    md = DigestUtils.md5Hex(is);
                 }
-                filesUploaded.addAndGet(1);
-                azureBlobs.add(azureBlob);
-            } catch (WAStorageException | InterruptedException | IOException e) {
-                final String message = Messages.AzureStorageBuilder_download_err(
-                        getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
-                e.printStackTrace(error(message));
-                println(message);
-                setRunUnstable();
+                return new UploadResult(code, md, uploadObject.getName(), uploadObject.getUrl(),
+                        src.length(), uploadObject.getStorageType());
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                method.releaseConnection();
             }
+            return null;
         }
     }
 
-    protected abstract void uploadIndividuals(String embeddedVP, FilePath[] paths) throws WAStorageException;
+
+//    class UploadThread implements Runnable {
+//        private Object uploadItem;
+//        private FilePath filePath;
+//        private List<AzureBlob> azureBlobs;
+//
+//        UploadThread(Object uploadItem, FilePath filePath, List<AzureBlob> azureBlobs) {
+//            this.uploadItem = uploadItem;
+//            this.filePath = filePath;
+//            this.azureBlobs = azureBlobs;
+//        }
+//
+//        @Override
+//        public void run() {
+//            try {
+//                AzureBlob azureBlob = null;
+//                if (uploadItem instanceof CloudBlockBlob) {
+//                    CloudBlockBlob blob = (CloudBlockBlob) uploadItem;
+//                    String uploadedFileHash = uploadBlob(blob, filePath);
+//                    azureBlob = new AzureBlob(
+//                            blob.getName(),
+//                            blob.getUri().toString().replace("http://", "https://"),
+//                            uploadedFileHash,
+//                            filePath.length(),
+//                            Constants.BLOB_STORAGE);
+//                } else {
+//                    CloudFile cloudFile = (CloudFile) uploadItem;
+//                    String uploadedFileHash = uploadCloudFile(cloudFile, filePath);
+//                    azureBlob = new AzureBlob(
+//                            cloudFile.getName(),
+//                            cloudFile.getUri().toString().replace("http://", "https://"),
+//                            uploadedFileHash,
+//                            filePath.length(),
+//                            Constants.FILE_STORAGE);
+//                }
+//                filesUploaded.addAndGet(1);
+//                azureBlobs.add(azureBlob);
+//            } catch (WAStorageException | InterruptedException | IOException e) {
+//                final String message = Messages.AzureStorageBuilder_download_err(
+//                        getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
+//                e.printStackTrace(error(message));
+//                println(message);
+//                setRunUnstable();
+//            }
+//        }
+//    }
+
+    protected abstract void uploadIndividuals(String embeddedVP, FilePath[] paths,
+                                              FilePath workspace) throws WAStorageException;
 
     protected abstract void uploadArchive(String archiveIncludes) throws WAStorageException;
 
@@ -249,7 +411,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
 
                 if (uploadPaths.length != 0 && serviceData.getUploadType() != UploadType.ZIP) {
                     // the uploadType is either INDIVIDUAL or BOTH, upload included individual files thus.
-                    uploadIndividuals(embeddedVP, uploadPaths);
+                    uploadIndividuals(embeddedVP, uploadPaths, workspacePath);
                 }
             }
 
@@ -277,46 +439,77 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         }
     }
 
-    /**
-     * @param blob
-     * @param src
-     * @throws StorageException
-     * @throws IOException
-     * @throws InterruptedException
-     * @returns Md5 hash of the uploaded file in hexadecimal encoding
-     */
-    protected String uploadBlob(CloudBlockBlob blob, FilePath src)
-            throws WAStorageException {
-        String hashedStorageAcc = AppInsightsUtils.hash(blob.getServiceClient().getCredentials().getAccountName());
-        try {
-            final MessageDigest md = DigestUtils.getMd5Digest();
-            long startTime = System.currentTimeMillis();
-            try (InputStream inputStream = src.read();
-                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
-                blob.upload(
-                        digestInputStream,
-                        src.length(),
-                        null,
-                        getBlobRequestOptions(),
-                        Utils.updateUserAgent(src.length()));
+//    protected Future<> uploadBlob(String url, FilePath src, TaskListener listener) throws WAStorageException {
 
-                // send AI event.
-                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-                        "StorageAccount", hashedStorageAcc,
-                        "ContentLength", String.valueOf(src.length()));
-            }
-            long endTime = System.currentTimeMillis();
+//        try {
+//            final MessageDigest md = DigestUtils.getMd5Digest();
+//            long startTime = System.currentTimeMillis();
 
-            println("Uploaded to file storage with uri " + blob.getUri() + " in " + getTime(endTime - startTime));
-            return DatatypeConverter.printHexBinary(md.digest());
-        } catch (IOException | InterruptedException | StorageException e) {
-            // send AI event.
-            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-                    "StorageAccount", hashedStorageAcc,
-                    "Message", e.getMessage());
-            throw new WAStorageException(e.getMessage(), e);
-        }
-    }
+//            HttpClient client = HttpUtils.getClient();
+//            PutMethod method = HttpUtils.getStoragePutMethod(url, new File(src.getRemote()));
+//            Future<?> submit = getExecutorService().submit(new UploadThread());
+
+//            try (InputStream inputStream = src.read();
+//                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
+//
+//                // send AI event.
+//                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
+//                        "StorageAccount", "",
+//                        "ContentLength", String.valueOf(src.length()));
+//            }
+//            long endTime = System.currentTimeMillis();
+//
+//            println("Uploaded to file storage with uri " + url + " in " + getTime(endTime - startTime));
+//            return DatatypeConverter.printHexBinary(md.digest());
+//        } catch (IOException | InterruptedException e) {
+//            // send AI event.
+//            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
+//                    "StorageAccount", "",
+//                    "Message", e.getMessage());
+//            throw new WAStorageException(e.getMessage(), e);
+//        }
+//    }
+
+//    /**
+//     * @param blob
+//     * @param src
+//     * @throws StorageException
+//     * @throws IOException
+//     * @throws InterruptedException
+//     * @returns Md5 hash of the uploaded file in hexadecimal encoding
+//     */
+//    protected String uploadBlob(CloudBlockBlob blob, FilePath src)
+//            throws WAStorageException {
+//        String hashedStorageAcc = AppInsightsUtils.hash(blob.getServiceClient().getCredentials().getAccountName());
+//        try {
+//            final MessageDigest md = DigestUtils.getMd5Digest();
+//            long startTime = System.currentTimeMillis();
+//            try (InputStream inputStream = src.read();
+//                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
+//                blob.upload(
+//                        digestInputStream,
+//                        src.length(),
+//                        null,
+//                        getBlobRequestOptions(),
+//                        Utils.updateUserAgent(src.length()));
+//
+//                // send AI event.
+//                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
+//                        "StorageAccount", hashedStorageAcc,
+//                        "ContentLength", String.valueOf(src.length()));
+//            }
+//            long endTime = System.currentTimeMillis();
+//
+//            println("Uploaded to file storage with uri " + blob.getUri() + " in " + getTime(endTime - startTime));
+//            return DatatypeConverter.printHexBinary(md.digest());
+//        } catch (IOException | InterruptedException | StorageException e) {
+//            // send AI event.
+//            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
+//                    "StorageAccount", hashedStorageAcc,
+//                    "Message", e.getMessage());
+//            throw new WAStorageException(e.getMessage(), e);
+//        }
+//    }
 
     protected String uploadCloudFile(CloudFile cloudFile, FilePath localPath)
             throws WAStorageException {

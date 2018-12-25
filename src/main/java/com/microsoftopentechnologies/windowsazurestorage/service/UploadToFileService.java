@@ -25,8 +25,10 @@ import com.microsoft.azure.storage.file.ListFileItem;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsConstants;
 import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsUtils;
 import com.microsoftopentechnologies.windowsazurestorage.AzureStoragePlugin;
+import com.microsoftopentechnologies.windowsazurestorage.beans.StorageAccountInfo;
 import com.microsoftopentechnologies.windowsazurestorage.exceptions.WAStorageException;
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
+import com.microsoftopentechnologies.windowsazurestorage.helper.Constants;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadServiceData;
 import hudson.FilePath;
 import hudson.util.DirScanner;
@@ -35,6 +37,9 @@ import org.apache.commons.lang.StringUtils;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
@@ -44,23 +49,39 @@ public class UploadToFileService extends UploadService {
     }
 
     @Override
-    protected void uploadIndividuals(String embeddedVP, FilePath[] paths) throws WAStorageException {
+    protected void uploadIndividuals(String embeddedVP, FilePath[] paths,
+                                     FilePath workspace) throws WAStorageException {
         final UploadServiceData serviceData = getServiceData();
         try {
             final CloudFileShare fileShare = getCloudFileShare();
 
+            List<UploadObject> uploadObjects = new ArrayList<>();
             for (FilePath src : paths) {
                 final String filePath = getItemPath(src, embeddedVP);
                 final CloudFile cloudFile = fileShare.getRootDirectoryReference().getFileReference(filePath);
                 ensureDirExist(cloudFile.getParent());
-                getExecutorService().submit(new UploadThread(cloudFile, src, serviceData.getIndividualBlobs()));
+
+
+                StorageAccountInfo accountInfo = serviceData.getStorageAccountInfo();
+                String sas = generateWriteSASURL(accountInfo, cloudFile.getName(),
+                        Constants.FILE_STORAGE, fileShare.getName());
+                String blobURL = cloudFile.getUri().toString().replace("http://", "https://");
+                UploadObject uploadObject = new UploadObject(cloudFile.getName(), src, blobURL,
+                        sas, Constants.BLOB_STORAGE);
+                uploadObjects.add(uploadObject);
             }
+            UploadOnSlave uploadOnSlave = new UploadOnSlave(uploadObjects);
+            List<Future<UploadResult>> results = workspace.act(uploadOnSlave);
+            updateAzureBlobs(results, serviceData.getIndividualBlobs());
+
         } catch (URISyntaxException | StorageException | IOException | InterruptedException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());
             AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_FILE_STORAGE, UPLOAD_FAILED,
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("fail to upload individual files to azure file storage", e);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -86,9 +107,19 @@ public class UploadToFileService extends UploadService {
             }
 
             final CloudFile cloudFile = fileShare.getRootDirectoryReference().getFileReference(azureFileName);
-            Future<?> archiveUploadFuture = getExecutorService().submit(new UploadThread(cloudFile,
-                    zipPath, serviceData.getArchiveBlobs()));
-            archiveUploadFuture.get();
+
+            StorageAccountInfo accountInfo = serviceData.getStorageAccountInfo();
+            String sas = generateWriteSASURL(accountInfo, cloudFile.getName(),
+                    Constants.FILE_STORAGE, fileShare.getName());
+            String blobURL = cloudFile.getUri().toString().replace("http://", "https://");
+            UploadObject uploadObject = new UploadObject(cloudFile.getName(), zipPath, blobURL,
+                    sas, Constants.BLOB_STORAGE);
+
+            UploadOnSlave uploadOnSlave = new UploadOnSlave(Collections.singletonList(uploadObject));
+
+            List<Future<UploadResult>> results = workspacePath.act(uploadOnSlave);
+            updateAzureBlobs(results, serviceData.getArchiveBlobs());
+
             tempDir.deleteRecursive();
         } catch (IOException | InterruptedException | URISyntaxException | StorageException | ExecutionException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());
@@ -96,6 +127,8 @@ public class UploadToFileService extends UploadService {
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("Fail to upload individual files to blob", e);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
