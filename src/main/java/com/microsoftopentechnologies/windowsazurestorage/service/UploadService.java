@@ -94,13 +94,16 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         private String url;
         private String sas;
         private String storageType;
+        private String storageAccount;
 
-        public UploadObject(String name, FilePath src, String url, String sas, String storageType) {
+        public UploadObject(String name, FilePath src, String url, String sas, String storageType,
+                            String storageAccount) {
             this.name = name;
             this.src = src;
             this.url = url;
             this.sas = sas;
             this.storageType = storageType;
+            this.storageAccount = storageAccount;
         }
 
         public String getName() {
@@ -121,6 +124,10 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
 
         public FilePath getSrc() {
             return src;
+        }
+
+        public String getStorageAccount() {
+            return storageAccount;
         }
     }
 
@@ -221,7 +228,8 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
                     filesUploaded.addAndGet(1);
                     azureBlobs.add(azureBlob);
 
-                   println("Uploaded to file storage with uri " + uploadResult.getUrl() + " in " + getTime(uploadResult.getEndTime() - uploadResult.getStartTime()));
+                    println("Uploaded to file storage with uri " + uploadResult.getUrl() + " in "
+                            + getTime(uploadResult.getEndTime() - uploadResult.getStartTime()));
                 } else {
                     // TODO log
                     println("Failed to upload, error code: " + HttpStatus.getStatusText(uploadResult.getStatusCode())
@@ -285,41 +293,42 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
             String url = uploadObject.getUrl();
             String sas = uploadObject.getSas();
             RequestEntity requestEntity = new FileRequestEntity(new File(src.getRemote()), null);
+            String hashedStorageAcc = AppInsightsUtils.hash(uploadObject.getStorageAccount());
 
             long startTime = System.currentTimeMillis();
-            ImmutablePair<Integer, String> response = null;
+            ImmutablePair<Integer, String> response;
             if (Constants.BLOB_STORAGE.equals(storageType)) {
                 PutMethod method = generateBlobWriteMethod(url, sas);
                 method.setRequestEntity(requestEntity);
                 response = execute(method);
-            } else if (Constants.FILE_STORAGE.equals(storageType)) {
+            } else {
                 PutMethod createMethod = generateFileCreateMethod(url, sas, requestEntity.getContentLength());
-                ImmutablePair<Integer, String> createResponse = execute(createMethod);
-                if (createResponse.left == HttpStatus.SC_CREATED) {
+                response = execute(createMethod);
+                if (response.getLeft() == HttpStatus.SC_CREATED) {
                     PutMethod writeMethod = generateFileWriteMethod(url, sas, requestEntity.getContentLength());
                     writeMethod.setRequestEntity(requestEntity);
                     response = execute(writeMethod);
-                } else {
-                    // failed to create file
-                    System.out.println("");
                 }
-            } else {
-                // unknown storage type
-                System.out.println("");
             }
             long endTime = System.currentTimeMillis();
 
-            // send AI event.
-            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_FILE_STORAGE, UPLOAD,
-                    "StorageAccount", hashedStorageAcc,
-                    "ContentLength", String.valueOf(localPath.length()));
 
+            if (response.getLeft() == HttpStatus.SC_CREATED) {
+                // send AI event.
+                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_FILE_STORAGE, UPLOAD,
+                        "StorageAccount", hashedStorageAcc,
+                        "ContentLength", String.valueOf(src.length()));
+            } else {
+                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_FILE_STORAGE, UPLOAD_FAILED,
+                        "StorageAccount", hashedStorageAcc,
+                        "Message", response.getRight());
+            }
 
             String md;
             try (InputStream is = src.read()) {
                 md = DigestUtils.md5Hex(is);
             }
-            return new UploadResult(response.left, response.right, md, uploadObject.getName(),
+            return new UploadResult(response.getLeft(), response.getRight(), md, uploadObject.getName(),
                     uploadObject.getUrl(), src.length(), uploadObject.getStorageType(),
                     startTime, endTime);
         }
@@ -464,77 +473,6 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         }
     }
 
-//    protected Future<> uploadBlob(String url, FilePath src, TaskListener listener) throws WAStorageException {
-
-//        try {
-//            final MessageDigest md = DigestUtils.getMd5Digest();
-//            long startTime = System.currentTimeMillis();
-
-//            HttpClient client = HttpUtils.getClient();
-//            PutMethod method = HttpUtils.getStoragePutMethod(url, new File(src.getRemote()));
-//            Future<?> submit = getExecutorService().submit(new UploadThread());
-
-//            try (InputStream inputStream = src.read();
-//                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
-//
-//                // send AI event.
-//                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-//                        "StorageAccount", "",
-//                        "ContentLength", String.valueOf(src.length()));
-//            }
-//            long endTime = System.currentTimeMillis();
-//
-//            println("Uploaded to file storage with uri " + url + " in " + getTime(endTime - startTime));
-//            return DatatypeConverter.printHexBinary(md.digest());
-//        } catch (IOException | InterruptedException e) {
-//            // send AI event.
-//            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-//                    "StorageAccount", "",
-//                    "Message", e.getMessage());
-//            throw new WAStorageException(e.getMessage(), e);
-//        }
-//    }
-
-//    /**
-//     * @param blob
-//     * @param src
-//     * @throws StorageException
-//     * @throws IOException
-//     * @throws InterruptedException
-//     * @returns Md5 hash of the uploaded file in hexadecimal encoding
-//     */
-//    protected String uploadBlob(CloudBlockBlob blob, FilePath src)
-//            throws WAStorageException {
-//        String hashedStorageAcc = AppInsightsUtils.hash(blob.getServiceClient().getCredentials().getAccountName());
-//        try {
-//            final MessageDigest md = DigestUtils.getMd5Digest();
-//            long startTime = System.currentTimeMillis();
-//            try (InputStream inputStream = src.read();
-//                 DigestInputStream digestInputStream = new DigestInputStream(inputStream, md)) {
-//                blob.upload(
-//                        digestInputStream,
-//                        src.length(),
-//                        null,
-//                        getBlobRequestOptions(),
-//                        Utils.updateUserAgent(src.length()));
-//
-//                // send AI event.
-//                AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-//                        "StorageAccount", hashedStorageAcc,
-//                        "ContentLength", String.valueOf(src.length()));
-//            }
-//            long endTime = System.currentTimeMillis();
-//
-//            println("Uploaded to file storage with uri " + blob.getUri() + " in " + getTime(endTime - startTime));
-//            return DatatypeConverter.printHexBinary(md.digest());
-//        } catch (IOException | InterruptedException | StorageException e) {
-//            // send AI event.
-//            AzureStoragePlugin.sendEvent(AppInsightsConstants.AZURE_BLOB_STORAGE, UPLOAD,
-//                    "StorageAccount", hashedStorageAcc,
-//                    "Message", e.getMessage());
-//            throw new WAStorageException(e.getMessage(), e);
-//        }
-//    }
 
     protected String uploadCloudFile(CloudFile cloudFile, FilePath localPath)
             throws WAStorageException {

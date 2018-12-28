@@ -67,7 +67,7 @@ public class UploadToFileService extends UploadService {
                         Constants.FILE_STORAGE, fileShare.getName());
                 String blobURL = cloudFile.getUri().toString().replace("http://", "https://");
                 UploadObject uploadObject = new UploadObject(cloudFile.getName(), src, blobURL,
-                        sas, Constants.FILE_STORAGE);
+                        sas, Constants.FILE_STORAGE, cloudFile.getServiceClient().getCredentials().getAccountName());
                 uploadObjects.add(uploadObject);
             }
             UploadOnSlave uploadOnSlave = new UploadOnSlave(uploadObjects);
@@ -113,7 +113,7 @@ public class UploadToFileService extends UploadService {
                     Constants.FILE_STORAGE, fileShare.getName());
             String blobURL = cloudFile.getUri().toString().replace("http://", "https://");
             UploadObject uploadObject = new UploadObject(cloudFile.getName(), zipPath, blobURL,
-                    sas, Constants.FILE_STORAGE);
+                    sas, Constants.FILE_STORAGE, cloudFile.getServiceClient().getCredentials().getAccountName());
 
             UploadOnSlave uploadOnSlave = new UploadOnSlave(Collections.singletonList(uploadObject));
 
