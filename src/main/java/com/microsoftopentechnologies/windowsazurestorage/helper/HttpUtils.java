@@ -17,11 +17,12 @@ package com.microsoftopentechnologies.windowsazurestorage.helper;
 
 import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
-import org.apache.commons.httpclient.methods.FileRequestEntity;
 import org.apache.commons.httpclient.methods.PutMethod;
 import org.apache.commons.httpclient.methods.RequestEntity;
+import org.apache.commons.httpclient.methods.StringRequestEntity;
 
 import java.io.File;
+import java.io.UnsupportedEncodingException;
 
 public final class HttpUtils {
     private static final HttpClient CLIENT = new HttpClient(new MultiThreadedHttpConnectionManager());
@@ -34,8 +35,14 @@ public final class HttpUtils {
         PutMethod method = new PutMethod(url);
         //TODO add user-agent
 //            method.addRequestHeader("User-Agent", pluginUserAgent);
-        method.addRequestHeader("x-ms-blob-type", "BlockBlob");
-        RequestEntity entity = new FileRequestEntity(file, null);
+//        method.addRequestHeader("x-ms-blob-type", "BlockBlob");
+//        RequestEntity entity = new FileRequestEntity(file, null);
+        RequestEntity entity = null;
+        try {
+            entity = new StringRequestEntity("fewaf", null, null);
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
         method.setRequestEntity(entity);
         return method;
     }
