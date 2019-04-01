@@ -44,12 +44,6 @@ public class UploadToFileService extends UploadService {
     }
 
     @Override
-    protected void uploadIndividuals(String embeddedVP, FilePath[] paths, FilePath workspace)
-            throws WAStorageException {
-        uploadIndividuals(embeddedVP, paths);
-    }
-
-    @Override
     protected void uploadIndividuals(String embeddedVP, FilePath[] paths) throws WAStorageException {
         final UploadServiceData serviceData = getServiceData();
         try {
@@ -59,7 +53,7 @@ public class UploadToFileService extends UploadService {
                 final String filePath = getItemPath(src, embeddedVP);
                 final CloudFile cloudFile = fileShare.getRootDirectoryReference().getFileReference(filePath);
                 ensureDirExist(cloudFile.getParent());
-                getExecutorService().submit(new FileUploadThread(cloudFile, src, serviceData.getIndividualBlobs()));
+                getExecutorService().submit(new UploadThread(cloudFile, src, serviceData.getIndividualBlobs()));
             }
         } catch (URISyntaxException | StorageException | IOException | InterruptedException e) {
             String storageAcc = AppInsightsUtils.hash(serviceData.getStorageAccountInfo().getStorageAccName());
@@ -92,7 +86,7 @@ public class UploadToFileService extends UploadService {
             }
 
             final CloudFile cloudFile = fileShare.getRootDirectoryReference().getFileReference(azureFileName);
-            Future<?> archiveUploadFuture = getExecutorService().submit(new FileUploadThread(cloudFile,
+            Future<?> archiveUploadFuture = getExecutorService().submit(new UploadThread(cloudFile,
                     zipPath, serviceData.getArchiveBlobs()));
             archiveUploadFuture.get();
             tempDir.deleteRecursive();

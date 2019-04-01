@@ -1,7 +1,5 @@
 package com.microsoftopentechnologies.windowsazurestorage;
 
-import com.microsoft.azure.storage.blob.SharedAccessBlobPermissions;
-import com.microsoft.azure.storage.file.SharedAccessFilePermissions;
 import com.microsoftopentechnologies.windowsazurestorage.beans.StorageAccountInfo;
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureCredentials;
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
@@ -18,7 +16,6 @@ import org.kohsuke.stapler.export.ExportedBean;
 
 import javax.servlet.ServletException;
 import java.io.IOException;
-import java.util.EnumSet;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.net.URLDecoder;
@@ -137,7 +134,7 @@ public class AzureBlobAction implements RunAction2 {
                 StandardCharsets.UTF_8.toString()))) {
             try {
                 response.sendRedirect2(zipArchiveBlob.getBlobURL() + "?"
-                        + generateReadSASURL(accountInfo, zipArchiveBlob.getBlobName()));
+                        + generateSASURL(accountInfo, blobName));
             } catch (Exception e) {
                 response.sendError(Constants.HTTP_INTERNAL_SERVER_ERROR,
                         "Error occurred while downloading artifact " + e.getMessage());
@@ -149,7 +146,7 @@ public class AzureBlobAction implements RunAction2 {
             if (blobName.equals(URLDecoder.decode(blob.getBlobName(), StandardCharsets.UTF_8.toString()))) {
                 try {
                     response.sendRedirect2(blob.getBlobURL() + "?"
-                            + generateReadSASURL(accountInfo, blob.getBlobName()));
+                            + generateSASURL(accountInfo, blobName));
                 } catch (Exception e) {
                     response.sendError(Constants.HTTP_INTERNAL_SERVER_ERROR,
                             "Error occurred while downloading artifact " + e.getMessage());
@@ -161,14 +158,13 @@ public class AzureBlobAction implements RunAction2 {
         response.sendError(Constants.HTTP_NOT_FOUND, "Azure artifact is not available");
     }
 
-    private String generateReadSASURL(StorageAccountInfo storageAccountInfo, String fileName) throws Exception {
+    private String generateSASURL(StorageAccountInfo storageAccountInfo, String fileName) throws Exception {
         if (getStorageType().equalsIgnoreCase(Constants.BLOB_STORAGE)) {
-            return AzureUtils.generateBlobSASURL(storageAccountInfo, containerName, fileName,
-                    EnumSet.of(SharedAccessBlobPermissions.READ));
+            return AzureUtils.generateBlobSASURL(storageAccountInfo, containerName, fileName);
         } else if (getStorageType().equalsIgnoreCase(Constants.FILE_STORAGE)) {
-            return AzureUtils.generateFileSASURL(storageAccountInfo, fileShareName, fileName,
-                    EnumSet.of(SharedAccessFilePermissions.READ));
+            return AzureUtils.generateFileSASURL(storageAccountInfo, fileShareName, fileName);
         }
+
         throw new Exception("Unknown storage type. Please re-configure your job and build again.");
     }
 
