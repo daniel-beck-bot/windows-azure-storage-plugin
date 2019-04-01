@@ -16,6 +16,7 @@
 package com.microsoftopentechnologies.windowsazurestorage.service;
 
 import com.microsoft.azure.storage.StorageException;
+import com.microsoft.azure.storage.blob.BlobProperties;
 import com.microsoft.azure.storage.blob.SharedAccessBlobPermissions;
 import com.microsoft.azure.storage.file.CloudFile;
 import com.microsoft.azure.storage.file.FileRequestOptions;
@@ -31,7 +32,6 @@ import com.microsoftopentechnologies.windowsazurestorage.exceptions.WAStorageExc
 import com.microsoftopentechnologies.windowsazurestorage.helper.AzureUtils;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Constants;
 import com.microsoftopentechnologies.windowsazurestorage.helper.Utils;
-import com.microsoftopentechnologies.windowsazurestorage.service.model.PartialBlobProperties;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadServiceData;
 import com.microsoftopentechnologies.windowsazurestorage.service.model.UploadType;
 import hudson.EnvVars;
@@ -56,7 +56,6 @@ import javax.xml.bind.DatatypeConverter;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Serializable;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.DigestInputStream;
@@ -147,15 +146,14 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
     /**
      * Data object for https uploading command.
      */
-    protected static class UploadObject implements Serializable {
-        private static final long serialVersionUID = -5342773517251888877L;
+    protected static class UploadObject {
         private String name;
         private FilePath src;
         private String url;
         private String sas;
         private String storageType;
         private String storageAccount;
-        private PartialBlobProperties blobProperties;
+        private BlobProperties blobProperties;
         private Map<String, String> metadata;
 
         /**
@@ -169,7 +167,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
          * @param storageAccount Storage account name for data tracing.
          */
         public UploadObject(String name, FilePath src, String url, String sas, String storageType,
-                            String storageAccount, PartialBlobProperties blobProperties, Map<String, String> metadata) {
+                            String storageAccount, BlobProperties blobProperties, Map<String, String> metadata) {
             this.name = name;
             this.src = src;
             this.url = url;
@@ -204,7 +202,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
             return storageAccount;
         }
 
-        public PartialBlobProperties getBlobProperties() {
+        public BlobProperties getBlobProperties() {
             return blobProperties;
         }
 
@@ -216,8 +214,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
     /**
      * Data object for https uploading result.
      */
-    protected static class UploadResult implements Serializable {
-        private static final long serialVersionUID = -3112548564900823521L;
+    protected static class UploadResult {
         private int statusCode;
         private String responseBody;
         private String fileHash;
@@ -296,8 +293,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
      * A task which will be executed on Jenkins agents. It will upload targeted files to
      * Azure Storage Service using https.
      */
-    static final class UploadOnSlave extends MasterToSlaveFileCallable<List<UploadResult>> {
-        private static final long serialVersionUID = -7284277515594786765L;
+    final class UploadOnSlave extends MasterToSlaveFileCallable<List<Future<UploadResult>>> {
         private List<UploadObject> uploadObjects;
 
         UploadOnSlave(List<UploadObject> uploadObjects) {
@@ -305,27 +301,12 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         }
 
         @Override
-        public List<UploadResult> invoke(File f, VirtualChannel channel)
+        public List<Future<UploadResult>> invoke(File f, VirtualChannel channel)
                 throws IOException, InterruptedException {
-            ExecutorService agentExecutorService = new ThreadPoolExecutor(UPLOAD_THREAD_COUNT, UPLOAD_THREAD_COUNT,
-                    KEEP_ALIVE_TIME, TimeUnit.SECONDS, new LinkedBlockingDeque<>());
-
-            List<Future<UploadResult>> futures = new ArrayList<>();
+            List<Future<UploadResult>> results = new ArrayList<>();
             for (UploadObject uploadObject : uploadObjects) {
-
-                Future<UploadResult> future = agentExecutorService.submit(new UploadThread(uploadObject));
-                futures.add(future);
-            }
-
-            List<UploadResult> results = new ArrayList<>();
-            try {
-                for (Future<UploadResult> future : futures) {
-                    results.add(future.get());
-                }
-            } catch (ExecutionException e) {
-                throw new IOException(e);
-            } finally {
-                agentExecutorService.shutdownNow();
+                Future<UploadResult> result = getExecutorService().submit(new UploadThread(uploadObject));
+                results.add(result);
             }
             return results;
         }
@@ -338,23 +319,38 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
      * @param azureBlobs Records of the uploaded files.
      * @throws WAStorageException throw exceptions when failing to fetch the the response.
      */
-    protected void updateAzureBlobs(List<UploadResult> results,
+    protected void updateAzureBlobs(List<Future<UploadResult>> results,
                                     List<AzureBlob> azureBlobs) throws WAStorageException {
-        for (UploadResult result : results) {
-            if (result.getStatusCode() == HttpStatus.SC_CREATED) {
-                AzureBlob azureBlob = new AzureBlob(
-                        result.getName(),
-                        result.getUrl(),
-                        result.getFileHash(),
-                        result.getByteSize(),
-                        result.getStorageType());
+        UploadResult uploadResult = null;
+        try {
+            for (Future<UploadResult> result : results) {
+                uploadResult = result.get();
+                if (uploadResult.getStatusCode() == HttpStatus.SC_CREATED) {
+                    AzureBlob azureBlob = new AzureBlob(
+                            uploadResult.getName(),
+                            uploadResult.getUrl(),
+                            uploadResult.getFileHash(),
+                            uploadResult.getByteSize(),
+                            uploadResult.getStorageType());
 
-                filesUploaded.addAndGet(1);
-                azureBlobs.add(azureBlob);
+                    filesUploaded.addAndGet(1);
+                    azureBlobs.add(azureBlob);
 
-                long interval = result.getEndTime() - result.getStartTime();
-                println(Messages.UploadService_https_uploaded(result.getUrl(), getTime(interval)));
+                    long interval = uploadResult.getEndTime() - uploadResult.getStartTime();
+                    println(Messages.UploadService_https_uploaded(uploadResult.getUrl(), getTime(interval)));
+                }
             }
+        } catch (InterruptedException | ExecutionException e) {
+            final String message = Messages.AzureStorageBuilder_download_err(
+                    getServiceData().getStorageAccountInfo().getStorageAccName()) + ":" + e.getMessage();
+            e.printStackTrace(error(message));
+            println(message);
+            if (uploadResult != null) {
+                println(Messages.UploadService_https_uploaded_fail(
+                        HttpStatus.getStatusText(uploadResult.getStatusCode()), uploadResult.getResponseBody()));
+            }
+            setRunUnstable();
+            throw new WAStorageException(e.toString());
         }
     }
 
@@ -443,7 +439,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
             return new ImmutablePair<>(code, responseBody);
         }
 
-        private PutMethod generateBlobWriteMethod(String url, String sas, PartialBlobProperties blobProperties,
+        private PutMethod generateBlobWriteMethod(String url, String sas, BlobProperties blobProperties,
                                                   Map<String, String> metadatas) {
             String sasUrl = url + "?" + sas;
             PutMethod method = new PutMethod(sasUrl);
