@@ -143,8 +143,23 @@ public final class AzureUtils {
             StorageAccountInfo storageAccount,
             String containerName,
             String blobName) throws Exception {
-        return generateBlobSASURL(storageAccount, containerName, blobName,
-                EnumSet.of(SharedAccessBlobPermissions.READ));
+
+        CloudStorageAccount cloudStorageAccount = getCloudStorageAccount(storageAccount);
+
+        // Create the blob client.
+        CloudBlobClient blobClient = cloudStorageAccount.createCloudBlobClient();
+        CloudBlobContainer container = blobClient.getContainerReference(containerName);
+
+        // At this point need to throw an error back since container itself did not exist.
+        if (!container.exists()) {
+            throw new Exception("WAStorageClient: generateBlobSASURL: Container " + containerName
+                    + " does not exist in storage account " + storageAccount.getStorageAccName());
+        }
+
+        CloudBlob blob = container.getBlockBlobReference(blobName);
+        String sas = blob.generateSharedAccessSignature(generateBlobPolicy(), null);
+
+        return sas;
     }
 
     @Deprecated
@@ -201,8 +216,17 @@ public final class AzureUtils {
             StorageAccountInfo storageAccount,
             String shareName,
             String fileName) throws Exception {
-        return generateFileSASURL(storageAccount, shareName, fileName,
-                EnumSet.of(SharedAccessFilePermissions.READ));
+        CloudStorageAccount cloudStorageAccount = getCloudStorageAccount(storageAccount);
+
+        CloudFileClient fileClient = cloudStorageAccount.createCloudFileClient();
+        CloudFileShare fileShare = fileClient.getShareReference((shareName));
+        if (!fileShare.exists()) {
+            throw new Exception("WAStorageClient: generateFileSASURL: Share " + shareName
+                    + " does not exist in storage account " + storageAccount.getStorageAccName());
+        }
+
+        CloudFile cloudFile = fileShare.getRootDirectoryReference().getFileReference(fileName);
+        return cloudFile.generateSharedAccessSignature(generateFilePolicy(), null);
     }
 
     @Deprecated
