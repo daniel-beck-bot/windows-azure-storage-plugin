@@ -82,8 +82,7 @@ public class UploadToBlobService extends UploadService {
             String blobURL = blob.getUri().toString().replace("http://", "https://");
             List<UploadObject> uploadObjects = new ArrayList<>();
             UploadObject uploadObject = new UploadObject(blob.getName(), zipPath, blobURL, sas, Constants.BLOB_STORAGE,
-                    blob.getServiceClient().getCredentials().getAccountName(),
-                    blob.getProperties(), blob.getMetadata());
+                    blob.getServiceClient().getCredentials().getAccountName());
             uploadObjects.add(uploadObject);
 
             UploadOnSlave uploadOnSlave = new UploadOnSlave(uploadObjects);
@@ -120,8 +119,7 @@ public class UploadToBlobService extends UploadService {
                         Constants.BLOB_STORAGE, container.getName());
                 String blobURL = blob.getUri().toString().replace("http://", "https://");
                 UploadObject uploadObject = new UploadObject(blob.getName(), src, blobURL, sas, Constants.BLOB_STORAGE,
-                        blob.getServiceClient().getCredentials().getAccountName(),
-                        blob.getProperties(), blob.getMetadata());
+                        blob.getServiceClient().getCredentials().getAccountName());
                 uploadObjects.add(uploadObject);
             }
 

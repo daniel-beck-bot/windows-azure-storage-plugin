@@ -16,7 +16,6 @@
 package com.microsoftopentechnologies.windowsazurestorage.service;
 
 import com.microsoft.azure.storage.StorageException;
-import com.microsoft.azure.storage.blob.BlobProperties;
 import com.microsoft.azure.storage.blob.SharedAccessBlobPermissions;
 import com.microsoft.azure.storage.file.CloudFile;
 import com.microsoft.azure.storage.file.FileRequestOptions;
@@ -64,7 +63,6 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -153,8 +151,6 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
         private String sas;
         private String storageType;
         private String storageAccount;
-        private BlobProperties blobProperties;
-        private Map<String, String> metadata;
 
         /**
          * Default Constructor for UploadObject.
@@ -167,15 +163,13 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
          * @param storageAccount Storage account name for data tracing.
          */
         public UploadObject(String name, FilePath src, String url, String sas, String storageType,
-                            String storageAccount, BlobProperties blobProperties, Map<String, String> metadata) {
+                            String storageAccount) {
             this.name = name;
             this.src = src;
             this.url = url;
             this.sas = sas;
             this.storageType = storageType;
             this.storageAccount = storageAccount;
-            this.blobProperties = blobProperties;
-            this.metadata = metadata;
         }
 
         public String getName() {
@@ -200,14 +194,6 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
 
         public String getStorageAccount() {
             return storageAccount;
-        }
-
-        public BlobProperties getBlobProperties() {
-            return blobProperties;
-        }
-
-        public Map<String, String> getMetadata() {
-            return metadata;
         }
     }
 
@@ -388,8 +374,7 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
             long startTime = System.currentTimeMillis();
             ImmutablePair<Integer, String> response;
             if (Constants.BLOB_STORAGE.equals(storageType)) {
-                PutMethod method = generateBlobWriteMethod(url, sas, uploadObject.getBlobProperties(),
-                        uploadObject.getMetadata());
+                PutMethod method = generateBlobWriteMethod(url, sas);
                 method.setRequestEntity(requestEntity);
                 response = execute(method);
             } else {
@@ -439,18 +424,10 @@ public abstract class UploadService extends StoragePluginService<UploadServiceDa
             return new ImmutablePair<>(code, responseBody);
         }
 
-        private PutMethod generateBlobWriteMethod(String url, String sas, BlobProperties blobProperties,
-                                                  Map<String, String> metadatas) {
+        private PutMethod generateBlobWriteMethod(String url, String sas) {
             String sasUrl = url + "?" + sas;
             PutMethod method = new PutMethod(sasUrl);
             method.addRequestHeader("x-ms-blob-type", "BlockBlob");
-            method.addRequestHeader("Cache-Control", blobProperties.getCacheControl());
-            method.addRequestHeader("x-ms-blob-content-type", blobProperties.getContentType());
-            method.addRequestHeader("x-ms-blob-content-encoding", blobProperties.getContentEncoding());
-            method.addRequestHeader("x-ms-blob-content-language", blobProperties.getContentLanguage());
-            for (Map.Entry<String, String> node : metadatas.entrySet()) {
-                method.addRequestHeader(String.format("x-ms-meta-%s", node.getKey()), node.getValue());
-            }
             return method;
         }
     }
