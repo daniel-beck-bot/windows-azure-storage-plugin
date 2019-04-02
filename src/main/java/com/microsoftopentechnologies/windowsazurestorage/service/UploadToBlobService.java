@@ -35,6 +35,7 @@ import org.apache.commons.lang.StringUtils;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.security.InvalidKeyException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
@@ -81,6 +82,8 @@ public class UploadToBlobService extends UploadService {
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("Fail to upload individual files to blob", e);
+        } catch (InvalidKeyException e) {
+            e.printStackTrace();
         }
     }
 
@@ -103,6 +106,8 @@ public class UploadToBlobService extends UploadService {
                     "StorageAccount", storageAcc,
                     "Message", e.getMessage());
             throw new WAStorageException("Fail to upload archive to blob", e);
+        } catch (InvalidKeyException e) {
+            e.printStackTrace();
         }
     }
 
@@ -123,9 +128,10 @@ public class UploadToBlobService extends UploadService {
         }
     }
 
-    private CloudBlobContainer getCloudBlobContainer() throws URISyntaxException, StorageException, IOException {
+    private CloudBlobContainer getCloudBlobContainer() throws URISyntaxException, StorageException,
+            IOException, WAStorageException, InvalidKeyException {
         final UploadServiceData serviceData = getServiceData();
-        final CloudBlobContainer container = AzureUtils.getBlobContainerReference(
+        final CloudBlobContainer container = AzureUtils.getSASBlobContainerReference(
                 serviceData.getStorageAccountInfo(),
                 serviceData.getContainerName(),
                 true,

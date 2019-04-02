@@ -20,6 +20,7 @@ import com.microsoft.azure.storage.CloudStorageAccount;
 import com.microsoft.azure.storage.OperationContext;
 import com.microsoft.azure.storage.RetryNoRetry;
 import com.microsoft.azure.storage.StorageCredentialsAccountAndKey;
+import com.microsoft.azure.storage.StorageCredentialsSharedAccessSignature;
 import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.blob.BlobContainerPermissions;
 import com.microsoft.azure.storage.blob.BlobContainerPublicAccessType;
@@ -45,6 +46,7 @@ import java.net.MalformedURLException;
 import java.net.Proxy;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.security.InvalidKeyException;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.EnumSet;
@@ -79,6 +81,23 @@ public final class AzureUtils {
         return true;
     }
 
+    public static CloudStorageAccount getSasCloudStorageAccount(String blobUrlStr, String sasToken)
+            throws URISyntaxException, MalformedURLException {
+        StorageCredentialsSharedAccessSignature credentials = new StorageCredentialsSharedAccessSignature(sasToken);
+
+        CloudStorageAccount cloudStorageAccount;
+        if (StringUtils.isBlank(blobUrlStr) || blobUrlStr.equalsIgnoreCase(Constants.DEF_BLOB_URL)) {
+            cloudStorageAccount = new CloudStorageAccount(credentials);
+        } else {
+            final URL blobURL = new URL(blobUrlStr);
+            boolean useHttps = blobURL.getProtocol().equalsIgnoreCase("https");
+
+            cloudStorageAccount = new CloudStorageAccount(credentials, useHttps, getEndpointSuffix(blobUrlStr));
+        }
+
+        return cloudStorageAccount;
+    }
+
     public static CloudStorageAccount getCloudStorageAccount(
             final StorageAccountInfo storageAccount) throws URISyntaxException, MalformedURLException {
         CloudStorageAccount cloudStorageAccount;
@@ -97,6 +116,37 @@ public final class AzureUtils {
         }
 
         return cloudStorageAccount;
+    }
+
+    public static CloudBlobContainer getSASBlobContainerReference(StorageAccountInfo storageAccount,
+                                                                  String containerName,
+                                                                  boolean createIfNotExist,
+                                                                  boolean allowRetry,
+                                                                  Boolean cntPubAccess)
+            throws IOException, URISyntaxException, StorageException, WAStorageException, InvalidKeyException {
+        String sasToken = generateContainerSASURL(storageAccount, containerName);
+        String blobURLStr = storageAccount.getBlobEndPointURL();
+        CloudStorageAccount sasCloudStorageAccount = getSasCloudStorageAccount(blobURLStr, sasToken);
+        final CloudBlobClient serviceClient = sasCloudStorageAccount.createCloudBlobClient();
+
+        if (!allowRetry) {
+            // Setting no retry policy
+            final RetryNoRetry rnr = new RetryNoRetry();
+            // serviceClient.setRetryPolicyFactory(rnr);
+            serviceClient.getDefaultRequestOptions().setRetryPolicyFactory(rnr);
+        }
+
+        final CloudBlobContainer container = serviceClient.getContainerReference(containerName);
+
+        boolean cntExists = container.exists();
+        if (createIfNotExist && !cntExists) {
+            container.createIfNotExists(null, Utils.updateUserAgent());
+        }
+
+        // Apply permissions only if container is created newly
+        setContainerPermission(container, cntExists, cntPubAccess);
+
+        return container;
     }
 
     public static CloudBlobContainer getBlobContainerReference(StorageAccountInfo storageAccount,
@@ -160,6 +210,26 @@ public final class AzureUtils {
 
         return sas;
     }
+
+    public static String generateContainerSASURL(StorageAccountInfo storageAccount,
+                                                 String containerName)
+            throws WAStorageException, URISyntaxException, StorageException, MalformedURLException,
+            InvalidKeyException {
+
+        CloudStorageAccount cloudStorageAccount = getCloudStorageAccount(storageAccount);
+        CloudBlobClient blobClient = cloudStorageAccount.createCloudBlobClient();
+        CloudBlobContainer container = blobClient.getContainerReference(containerName);
+        if (!container.exists()) {
+            throw new WAStorageException("WAStorageClient: generateBlobSASURL: Container " + containerName
+                    + " does not exist in storage account " + storageAccount.getStorageAccName());
+        }
+        SharedAccessBlobPolicy policy = new SharedAccessBlobPolicy();
+        policy.setPermissions(EnumSet.of(SharedAccessBlobPermissions.READ,
+                SharedAccessBlobPermissions.WRITE));
+
+        return container.generateSharedAccessSignature(policy, null);
+    }
+
 
     public static SharedAccessBlobPolicy generateBlobPolicy() {
         SharedAccessBlobPolicy policy = new SharedAccessBlobPolicy();
